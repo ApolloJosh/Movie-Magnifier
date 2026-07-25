@@ -67,6 +67,15 @@
   .queue li.locked{opacity:.45; text-decoration:line-through;}
   .queue .pos{color:var(--muted); font-size:12px; width:22px;}
   .queue .empty{color:var(--muted); font-weight:400; font-style:italic;}
+  .hostfb{min-height:18px; font-size:13px; font-weight:600; margin-bottom:8px;}
+  .guessbar{display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap;}
+  .guesswrap{position:relative; flex:1; min-width:200px;}
+  .guesswrap input{width:100%; text-align:left;}
+  .ac-list{list-style:none; margin:6px 0 0; padding:6px; position:absolute; left:0; right:0; top:100%; z-index:20;
+    background:#0f1120; border:1px solid #2a2f4d; border-radius:10px; max-height:260px; overflow:auto; box-shadow:0 12px 30px rgba(0,0,0,.5);}
+  .ac-list li{padding:9px 12px; border-radius:7px; cursor:pointer; font-size:14px; display:flex; justify-content:space-between; gap:10px;}
+  .ac-list li .yr{color:var(--muted); font-size:12px; flex:none;}
+  .ac-list li.active, .ac-list li:hover{background:#262b47;}
 
   .scoreboard{width:100%; max-width:1000px; margin-top:18px; display:flex; gap:10px; flex-wrap:wrap; justify-content:center;}
   .scorecard{background:var(--panel); border:1px solid #2a2f4d; border-radius:12px; padding:10px 18px; min-width:110px; text-align:center;}
@@ -161,9 +170,17 @@
   <div class="buzzpanel">
     <h3 id="buzzHead">Buzz order</h3>
     <ul class="queue" id="queue"><li class="empty">Buzzers open — waiting for someone to buzz…</li></ul>
+    <div class="hostfb" id="hostFeedback"></div>
+    <div class="guessbar">
+      <div class="guesswrap">
+        <input type="text" id="guessInput" placeholder="Type the guess they said out loud…" autocomplete="off" disabled>
+        <ul id="acList" class="ac-list hidden"></ul>
+      </div>
+      <button class="btn btn-primary" id="guessBtn" disabled>Submit Guess</button>
+    </div>
     <div class="controls" style="margin-top:0">
-      <button class="btn btn-primary" id="correctBtn" disabled>✅ Correct</button>
-      <button class="btn btn-ghost" id="wrongBtn" disabled>❌ Wrong (next)</button>
+      <button class="btn btn-ghost" id="correctBtn" disabled>✅ Mark correct</button>
+      <button class="btn btn-ghost" id="wrongBtn" disabled>❌ Wrong / pass (next)</button>
     </div>
   </div>
 
@@ -211,6 +228,8 @@ const MY_ID = pid();
 function makeCode(){ const a='ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; return Array.from({length:4},()=>a[Math.floor(Math.random()*a.length)]).join(''); }
 function shuffle(arr){ for(let i=arr.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1)); [arr[i],arr[j]]=[arr[j],arr[i]];} return arr; }
 function cleanName(fn){ return fn.replace(/\.[^/.]+$/,'').replace(/[_-]+/g,' ').replace(/\s+/g,' ').trim(); }
+function normalize(s){ return s.toLowerCase().replace(/[^a-z0-9 ]/g,'').replace(/\b(the|a|an)\b/g,'').replace(/\s+/g,' ').trim(); }
+function isCorrect(guess, answer){ const g=normalize(guess), a=normalize(answer); if(!g) return false; if(g===a) return true; if(g.length>=4 && (a.includes(g)||g.includes(a))) return true; return false; }
 
 /* ================= ROUTER ================= */
 window.addEventListener('DOMContentLoaded', () => {
@@ -319,6 +338,7 @@ function startRound(){
   const img=images[order[roundIdx]];
   $('pic').src=img.url;
   $('reveal').classList.remove('show'); $('reveal').textContent='';
+  $('guessInput').value=''; $('hostFeedback').textContent=''; hideAC();
   $('roundLabel').textContent='Movie '+(roundIdx+1)+' of '+images.length;
   applyZoom(); renderQueue(); renderScoreboard(); broadcastState();
 }
@@ -336,6 +356,7 @@ function onBuzz(p){
   if(buzzOrder.some(b=>b.pid===p.pid)) return;
   buzzOrder.push({ pid:p.pid, name:p.name });
   renderQueue(); broadcastState();
+  if(buzzOrder.length===1){ const gi=$('guessInput'); if(!gi.disabled) gi.focus(); }
 }
 function renderQueue(){
   const ul=$('queue');
@@ -355,8 +376,11 @@ function renderQueue(){
     });
   }
   const active=activeBuzzer();
-  $('correctBtn').disabled = !active;
-  $('wrongBtn').disabled = !active;
+  const live = !!active && phase!=='reveal';
+  $('correctBtn').disabled = !live;
+  $('wrongBtn').disabled = !live;
+  $('guessInput').disabled = !live;
+  $('guessBtn').disabled = !live;
   $('buzzHead').textContent = active ? ('On the buzzer: '+active.name) : 'Buzz order';
 }
 
@@ -374,7 +398,7 @@ $('wrongBtn').onclick = () => {
 };
 $('zoomBtn').onclick = () => {
   if(phase==='reveal') return;
-  if(step<LEVELS.length-1){ step++; buzzOrder=[]; lockedOut=new Set(); buzzersOpen=true; applyZoom(); renderQueue(); broadcastState(); }
+  if(step<LEVELS.length-1){ step++; buzzOrder=[]; lockedOut=new Set(); buzzersOpen=true; $('guessInput').value=''; $('hostFeedback').textContent=''; hideAC(); applyZoom(); renderQueue(); broadcastState(); }
 };
 $('revealBtn').onclick = () => { if(phase!=='reveal') endRound('Revealed — no points.', null); };
 $('nextBtn').onclick = () => {
@@ -384,11 +408,83 @@ $('nextBtn').onclick = () => {
 };
 $('endBtn').onclick = () => { if(confirm('End the game and return to start?')) location.reload(); };
 
+/* ---- host typed guess (with movie autocomplete) ---- */
+const guessInput=$('guessInput'), acList=$('acList');
+let acItems=[], acIdx=-1, acTimer=null, reqSeq=0, latestReq=0;
+function hideAC(){ acList.classList.add('hidden'); acList.innerHTML=''; acItems=[]; acIdx=-1; }
+async function tryItunes(q){
+  try{
+    const res=await fetch(`https://itunes.apple.com/search?media=movie&entity=movie&limit=12&country=US&term=${encodeURIComponent(q)}`);
+    if(!res.ok) return null;
+    const data=await res.json();
+    const items=(data.results||[]).filter(r=>r.trackName).map(r=>({title:r.trackName, year:r.releaseDate?r.releaseDate.slice(0,4):''}));
+    return items.length?items:null;
+  }catch(e){ return null; }
+}
+async function tryWiki(q){
+  try{
+    const res=await fetch(`https://en.wikipedia.org/w/api.php?action=opensearch&search=${encodeURIComponent(q)}&limit=10&namespace=0&format=json&origin=*`);
+    if(!res.ok) return null;
+    const data=await res.json();
+    return (data[1]||[]).map(t=>({title:t.replace(/\s*\(.*film\)$/i,''), year:''}));
+  }catch(e){ return null; }
+}
+async function fetchSuggestions(q){
+  if(q.length<2){ hideAC(); return; }
+  const id=++reqSeq; latestReq=id;
+  let items=await tryItunes(q);
+  if(items===null) items=await tryWiki(q);
+  if(id!==latestReq) return;
+  renderAC((items||[]).slice(0,8));
+}
+function renderAC(results){
+  if(!results.length){ hideAC(); return; }
+  acItems=results.map(r=>r.title); acIdx=-1; acList.innerHTML='';
+  results.forEach((r,i)=>{
+    const li=document.createElement('li');
+    li.innerHTML='<span>'+r.title+'</span><span class="yr">'+r.year+'</span>';
+    li.onmousedown=e=>{ e.preventDefault(); chooseAC(i); };
+    acList.appendChild(li);
+  });
+  acList.classList.remove('hidden');
+}
+function chooseAC(i){ if(i<0||i>=acItems.length) return; guessInput.value=acItems[i]; hideAC(); guessInput.focus(); }
+function highlightAC(){ [...acList.children].forEach((li,i)=>li.classList.toggle('active', i===acIdx)); }
+
+guessInput.addEventListener('input', ()=>{ clearTimeout(acTimer); const q=guessInput.value.trim(); acTimer=setTimeout(()=>fetchSuggestions(q),220); });
+guessInput.addEventListener('keydown', e=>{
+  const open=!acList.classList.contains('hidden');
+  if(open && e.key==='ArrowDown'){ e.preventDefault(); acIdx=Math.min(acIdx+1,acItems.length-1); highlightAC(); }
+  else if(open && e.key==='ArrowUp'){ e.preventDefault(); acIdx=Math.max(acIdx-1,0); highlightAC(); }
+  else if(e.key==='Escape'){ hideAC(); }
+  else if(e.key==='Enter'){ if(open && acIdx>=0) chooseAC(acIdx); else submitHostGuess(); }
+});
+guessInput.addEventListener('blur', ()=>setTimeout(hideAC,120));
+$('guessBtn').onclick = submitHostGuess;
+
+function submitHostGuess(){
+  const active=activeBuzzer(); if(!active || phase==='reveal') return;
+  const g=guessInput.value.trim(); if(!g) return;
+  const answer=images[order[roundIdx]].name;
+  if(isCorrect(g, answer)){
+    const points=LEVELS.length-step;
+    if(!scores[active.pid]) scores[active.pid]={name:active.name,score:0};
+    scores[active.pid].score+=points;
+    endRound('✅ '+active.name+' got it! +'+points, active.name);
+  } else {
+    lockedOut.add(active.pid);
+    const fb=$('hostFeedback'); fb.textContent='❌ "'+g+'" — wrong. '+active.name+' is out; next buzzer is up.'; fb.style.color='var(--bad)';
+    guessInput.value=''; hideAC(); renderQueue(); broadcastState();
+    const gi=$('guessInput'); if(!gi.disabled) gi.focus();
+  }
+}
+
 function endRound(msg, winnerName){
   phase='reveal'; buzzersOpen=false; step=LEVELS.length-1; applyZoom();
   const img=images[order[roundIdx]];
   $('reveal').innerHTML=img.name+'<small>'+msg+'</small>';
   $('reveal').classList.add('show');
+  $('guessInput').value=''; $('hostFeedback').textContent=''; hideAC();
   renderQueue(); renderScoreboard(); broadcastState(winnerName, img.name);
 }
 
