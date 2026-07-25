@@ -113,10 +113,18 @@
   .cand .tick{position:absolute; top:8px; right:8px; width:26px; height:26px; border-radius:50%;
     background:rgba(0,0,0,.55); display:flex; align-items:center; justify-content:center; font-size:15px; font-weight:800;}
   .cand.sel .tick{background:var(--accent); color:#1a1400;}
-  .cand .shuf{position:absolute; top:8px; left:8px; width:28px; height:28px; border:none; border-radius:8px;
-    background:rgba(0,0,0,.55); color:#fff; font-size:15px; cursor:pointer; display:flex; align-items:center; justify-content:center;}
-  .cand .shuf:hover{background:rgba(0,0,0,.8);}
+  .cand .cbtns{position:absolute; top:8px; left:8px; display:flex; gap:6px; z-index:2;}
+  .cand .cbtn{width:30px; height:30px; border:none; border-radius:8px; background:rgba(0,0,0,.6); color:#fff;
+    font-size:15px; cursor:pointer; display:flex; align-items:center; justify-content:center;}
+  .cand .cbtn:hover{background:rgba(0,0,0,.85);}
+  .cand img{cursor:zoom-in;}
   .packsbtns button{margin:4px;}
+  /* lightbox */
+  #lightbox{position:fixed; inset:0; background:rgba(0,0,0,.92); z-index:100; display:flex; flex-direction:column;
+    align-items:center; justify-content:center; padding:24px; cursor:zoom-out;}
+  #lightbox img{max-width:96%; max-height:82%; border-radius:8px; box-shadow:0 20px 60px rgba(0,0,0,.6);}
+  #lightboxCap{color:#fff; margin-top:14px; font-weight:700; font-size:16px; text-align:center;}
+  #lightboxCap small{display:block; color:var(--muted); font-weight:400; margin-top:4px;}
 </style>
 </head>
 <body>
@@ -235,6 +243,12 @@
 
   <div class="reveal" id="reveal"></div>
   <div class="scoreboard" id="scoreboard"></div>
+</div>
+
+<!-- ============ LIGHTBOX (full still preview) ============ -->
+<div id="lightbox" class="hidden">
+  <img id="lightboxImg" src="" alt="">
+  <div id="lightboxCap"></div>
 </div>
 
 <!-- ============ PLAYER GAME ============ -->
@@ -614,6 +628,12 @@ function reshuffleCard(i){
   c.path=p; c.url='https://image.tmdb.org/t/p/original'+p; c.thumb='https://image.tmdb.org/t/p/w780'+p;
   renderCandidates();
 }
+function openLightbox(url, title, year){
+  $('lightboxImg').src=url;
+  $('lightboxCap').innerHTML=title+' <span style="color:var(--muted)">'+(year||'')+'</span><small>This is the exact image players will see. Click anywhere to close.</small>';
+  $('lightbox').classList.remove('hidden');
+}
+$('lightbox').onclick=()=>{ $('lightbox').classList.add('hidden'); $('lightboxImg').src=''; };
 async function findMovies(){
   if(!tmdbReady){ $('packMsg').textContent='TMDB key not set in index.html.'; return; }
   const topic=$('packTopic').value.trim();
@@ -642,7 +662,9 @@ async function findMovies(){
     $('packMsg').textContent='Grabbing scene stills for '+uniq.length+' movies…';
     candidates=(await Promise.all(uniq.map(async m=>{
       let pool=await moviePool(m.id);
-      if(!pool.length) pool=[m.backdrop_path];        // fallback to key art if no gallery stills
+      const noHero=pool.filter(p=>p!==m.backdrop_path);   // drop the main promo image
+      if(noHero.length) pool=noHero;
+      if(!pool.length) pool=[m.backdrop_path];            // fallback to key art if nothing else
       const path=pool[Math.floor(Math.random()*pool.length)];
       return { id:m.id, title:m.title, year:(m.release_date||'').slice(0,4),
         pool, path, url:'https://image.tmdb.org/t/p/original'+path,
@@ -658,9 +680,15 @@ function renderCandidates(){
   candidates.forEach((c,i)=>{
     const d=document.createElement('div');
     d.className='cand'+(c.sel?' sel':'');
-    d.innerHTML='<button class="shuf" title="Different still">🔀</button><div class="tick">'+(c.sel?'✓':'')+'</div><img loading="lazy" src="'+c.thumb+'" alt=""><div class="lbl">'+c.title+' <span class="yr">'+c.year+'</span></div>';
+    d.innerHTML='<div class="cbtns"><button class="cbtn view" title="View full still">🔍</button><button class="cbtn shuf" title="Different still">🔀</button></div>'
+      +'<div class="tick">'+(c.sel?'✓':'')+'</div>'
+      +'<img loading="lazy" src="'+c.thumb+'" alt="">'
+      +'<div class="lbl">'+c.title+' <span class="yr">'+c.year+'</span></div>';
     d.onclick=()=>{ candidates[i].sel=!candidates[i].sel; renderCandidates(); };
     d.querySelector('.shuf').onclick=(e)=>{ e.stopPropagation(); reshuffleCard(i); };
+    const openView=(e)=>{ e.stopPropagation(); openLightbox(candidates[i].url, candidates[i].title, candidates[i].year); };
+    d.querySelector('.view').onclick=openView;
+    d.querySelector('img').onclick=openView;
     g.appendChild(d);
   });
   const n=candidates.filter(c=>c.sel).length;
