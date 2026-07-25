@@ -207,6 +207,8 @@
     </div>
     <div style="display:flex;gap:8px;align-items:center">
       <span class="zoom-pill" id="roomPill"></span>
+      <button class="btn btn-ghost" id="micBtn" title="Include microphone in recording" style="padding:8px 12px;font-size:13px">🎤 Off</button>
+      <button class="btn btn-ghost" id="recBtn" style="padding:8px 12px;font-size:13px">⏺ Record</button>
       <button class="btn btn-ghost" id="endBtn" style="padding:8px 14px;font-size:13px">End Game</button>
     </div>
   </div>
@@ -483,6 +485,52 @@ $('nextBtn').onclick = () => {
   startRound();
 };
 $('endBtn').onclick = () => { if(confirm('End the game and return to start?')) location.reload(); };
+
+/* ---- screen recorder (captures the host screen; optional mic) ---- */
+let mediaRecorder=null, recChunks=[], recStream=null, micStream=null, recAudioCtx=null, micOn=false, recTimer=null, recStart=0;
+$('micBtn').onclick=()=>{ micOn=!micOn; $('micBtn').textContent=micOn?'🎤 On':'🎤 Off'; $('micBtn').style.color=micOn?'var(--good)':''; };
+$('recBtn').onclick=async ()=>{
+  if(mediaRecorder && mediaRecorder.state!=='inactive'){ stopRecording(); return; }
+  if(!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia){ alert('Screen recording needs a modern browser over https (your GitHub Pages URL works).'); return; }
+  try{ recStream=await navigator.mediaDevices.getDisplayMedia({ video:{frameRate:30}, audio:true }); }
+  catch(e){ return; }   // user cancelled the share dialog
+  if(micOn){ try{ micStream=await navigator.mediaDevices.getUserMedia({audio:true}); }catch(e){ micStream=null; } }
+  let combined;
+  if(micOn && micStream){
+    recAudioCtx=new (window.AudioContext||window.webkitAudioContext)();
+    const dest=recAudioCtx.createMediaStreamDestination();
+    const dispAudio=recStream.getAudioTracks();
+    if(dispAudio.length) recAudioCtx.createMediaStreamSource(new MediaStream(dispAudio)).connect(dest);
+    recAudioCtx.createMediaStreamSource(micStream).connect(dest);
+    combined=new MediaStream([recStream.getVideoTracks()[0], ...dest.stream.getAudioTracks()]);
+  } else { combined=recStream; }
+  const mime = MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus') ? 'video/webm;codecs=vp9,opus'
+             : (MediaRecorder.isTypeSupported('video/webm;codecs=vp8,opus') ? 'video/webm;codecs=vp8,opus' : 'video/webm');
+  recChunks=[];
+  mediaRecorder=new MediaRecorder(combined, { mimeType:mime, videoBitsPerSecond:8000000 });
+  mediaRecorder.ondataavailable=e=>{ if(e.data && e.data.size) recChunks.push(e.data); };
+  mediaRecorder.onstop=saveRecording;
+  recStream.getVideoTracks()[0].addEventListener('ended', ()=>{ if(mediaRecorder && mediaRecorder.state!=='inactive') stopRecording(); });
+  mediaRecorder.start(1000);
+  recStart=Date.now();
+  const tick=()=>{ const s=Math.floor((Date.now()-recStart)/1000); $('recBtn').textContent='⏹ Stop '+Math.floor(s/60)+':'+String(s%60).padStart(2,'0'); };
+  tick(); $('recBtn').style.color='var(--bad)'; recTimer=setInterval(tick,500);
+};
+function stopRecording(){ if(mediaRecorder && mediaRecorder.state!=='inactive') mediaRecorder.stop(); }
+function saveRecording(){
+  clearInterval(recTimer);
+  const blob=new Blob(recChunks,{type:'video/webm'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url; a.download='movie-magnifier-'+new Date().toISOString().slice(0,16).replace(/[:T]/g,'-')+'.webm';
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),15000);
+  if(recStream) recStream.getTracks().forEach(t=>t.stop());
+  if(micStream) micStream.getTracks().forEach(t=>t.stop());
+  if(recAudioCtx){ try{recAudioCtx.close();}catch(e){} recAudioCtx=null; }
+  recStream=null; micStream=null; mediaRecorder=null;
+  $('recBtn').textContent='⏺ Record'; $('recBtn').style.color='';
+}
 
 /* ---- host typed guess (with movie autocomplete) ---- */
 const guessInput=$('guessInput'), acList=$('acList');
