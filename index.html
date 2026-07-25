@@ -214,6 +214,8 @@ const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 
 /* Zoom curve: 7 stages, 6 zoom-outs to fully reveal. */
 const LEVELS = [2000, 1000, 750, 500, 300, 200, 100];
+/* First player to reach this score wins the game. */
+const WIN_SCORE = 10;
 
 const $ = id => document.getElementById(id);
 const configured = !SUPABASE_URL.includes("YOUR_") && !SUPABASE_ANON_KEY.includes("YOUR_");
@@ -376,7 +378,7 @@ function renderQueue(){
     });
   }
   const active=activeBuzzer();
-  const live = !!active && phase!=='reveal';
+  const live = !!active && phase==='playing';
   $('correctBtn').disabled = !live;
   $('wrongBtn').disabled = !live;
   $('guessInput').disabled = !live;
@@ -385,23 +387,35 @@ function renderQueue(){
 }
 
 $('correctBtn').onclick = () => {
-  const active=activeBuzzer(); if(!active) return;
+  const active=activeBuzzer(); if(!active || phase!=='playing') return;
+  awardCorrect(active);
+};
+function awardCorrect(active){
   const points=LEVELS.length-step;
   if(!scores[active.pid]) scores[active.pid]={name:active.name,score:0};
   scores[active.pid].score+=points;
-  endRound('✅ '+active.name+' got it! +'+points, active.name);
-};
+  const won=scores[active.pid].score>=WIN_SCORE;
+  endRound('✅ '+active.name+' got it! +'+points+(won?' — and wins!':''), active.name);
+  if(won) gameOver(active.name);
+}
+function gameOver(name){
+  phase='gameover'; buzzersOpen=false;
+  $('reveal').innerHTML='🏆 '+name+' wins!<small>First to '+WIN_SCORE+' points</small>';
+  $('reveal').classList.add('show');
+  renderQueue(); renderScoreboard(); broadcastState(name, images[order[roundIdx]].name);
+}
 $('wrongBtn').onclick = () => {
   const active=activeBuzzer(); if(!active) return;
   lockedOut.add(active.pid);
   renderQueue(); broadcastState();
 };
 $('zoomBtn').onclick = () => {
-  if(phase==='reveal') return;
+  if(phase!=='playing') return;
   if(step<LEVELS.length-1){ step++; buzzOrder=[]; lockedOut=new Set(); buzzersOpen=true; $('guessInput').value=''; $('hostFeedback').textContent=''; hideAC(); applyZoom(); renderQueue(); broadcastState(); }
 };
-$('revealBtn').onclick = () => { if(phase!=='reveal') endRound('Revealed — no points.', null); };
+$('revealBtn').onclick = () => { if(phase==='playing') endRound('Revealed — no points.', null); };
 $('nextBtn').onclick = () => {
+  if(phase==='gameover') return;
   roundIdx=(roundIdx+1)%images.length;
   if(roundIdx===0) order=shuffle([...images.keys()]);
   startRound();
@@ -467,10 +481,7 @@ function submitHostGuess(){
   const g=guessInput.value.trim(); if(!g) return;
   const answer=images[order[roundIdx]].name;
   if(isCorrect(g, answer)){
-    const points=LEVELS.length-step;
-    if(!scores[active.pid]) scores[active.pid]={name:active.name,score:0};
-    scores[active.pid].score+=points;
-    endRound('✅ '+active.name+' got it! +'+points, active.name);
+    awardCorrect(active);
   } else {
     lockedOut.add(active.pid);
     const fb=$('hostFeedback'); fb.textContent='❌ "'+g+'" — wrong. '+active.name+' is out; next buzzer is up.'; fb.style.color='var(--bad)';
@@ -559,6 +570,13 @@ function renderPlayer(s){
     el.appendChild(c);
   });
 
+  if(s.phase==='gameover'){
+    btn.disabled=true;
+    $('pReveal').innerHTML = '🏆 '+(s.winner||'')+' wins!<small>First to '+WIN_SCORE+' points</small>';
+    $('pReveal').classList.add('show');
+    $('pStatus').textContent='Game over';
+    return;
+  }
   if(s.phase==='reveal'){
     btn.disabled=true;
     $('pReveal').innerHTML = (s.winner?('✅ '+s.winner+' got it!'):'Revealed') + '<small>'+(s.reveal||'')+'</small>';
