@@ -113,6 +113,9 @@
   .cand .tick{position:absolute; top:8px; right:8px; width:26px; height:26px; border-radius:50%;
     background:rgba(0,0,0,.55); display:flex; align-items:center; justify-content:center; font-size:15px; font-weight:800;}
   .cand.sel .tick{background:var(--accent); color:#1a1400;}
+  .cand .shuf{position:absolute; top:8px; left:8px; width:28px; height:28px; border:none; border-radius:8px;
+    background:rgba(0,0,0,.55); color:#fff; font-size:15px; cursor:pointer; display:flex; align-items:center; justify-content:center;}
+  .cand .shuf:hover{background:rgba(0,0,0,.8);}
   .packsbtns button{margin:4px;}
 </style>
 </head>
@@ -593,6 +596,24 @@ async function resolveTopic(topic){
   if(data.results && data.results.length) return { with_keywords:data.results[0].id };
   return null;
 }
+async function moviePool(id){
+  // Returns file_paths of a movie's backdrop images, preferring textless ones
+  // (iso_639_1 === null) so titles/logos don't give the answer away.
+  try{
+    const res=await fetch(tmdbUrl('/movie/'+id+'/images', {}));
+    const data=await res.json();
+    const bks=data.backdrops||[];
+    const textless=bks.filter(b=>b.iso_639_1===null).map(b=>b.file_path);
+    return textless.length ? textless : bks.map(b=>b.file_path);
+  }catch(e){ return []; }
+}
+function reshuffleCard(i){
+  const c=candidates[i];
+  if(!c.pool || c.pool.length<2) return;
+  let p; do{ p=c.pool[Math.floor(Math.random()*c.pool.length)]; }while(p===c.path && c.pool.length>1);
+  c.path=p; c.url='https://image.tmdb.org/t/p/original'+p; c.thumb='https://image.tmdb.org/t/p/w780'+p;
+  renderCandidates();
+}
 async function findMovies(){
   if(!tmdbReady){ $('packMsg').textContent='TMDB key not set in index.html.'; return; }
   const topic=$('packTopic').value.trim();
@@ -616,13 +637,19 @@ async function findMovies(){
       if(page>=(data.total_pages||1)) break;
     }
     const seen=new Set();
-    candidates=movies.filter(m=>m.backdrop_path).map(m=>({
-      title:m.title, year:(m.release_date||'').slice(0,4),
-      url:'https://image.tmdb.org/t/p/original'+m.backdrop_path,
-      thumb:'https://image.tmdb.org/t/p/w500'+m.backdrop_path, sel:true
-    })).filter(c=>{ if(seen.has(c.title)) return false; seen.add(c.title); return true; });
+    const uniq=movies.filter(m=>m.backdrop_path).filter(m=>{ if(seen.has(m.title)) return false; seen.add(m.title); return true; }).slice(0,40);
+    if(!uniq.length){ $('packMsg').textContent='No movies found — try another topic or year.'; return; }
+    $('packMsg').textContent='Grabbing scene stills for '+uniq.length+' movies…';
+    candidates=(await Promise.all(uniq.map(async m=>{
+      let pool=await moviePool(m.id);
+      if(!pool.length) pool=[m.backdrop_path];        // fallback to key art if no gallery stills
+      const path=pool[Math.floor(Math.random()*pool.length)];
+      return { id:m.id, title:m.title, year:(m.release_date||'').slice(0,4),
+        pool, path, url:'https://image.tmdb.org/t/p/original'+path,
+        thumb:'https://image.tmdb.org/t/p/w780'+path, sel:true };
+    }))).filter(Boolean);
     if(!candidates.length){ $('packMsg').textContent='No usable images found — try another topic or year.'; return; }
-    $('packMsg').textContent=candidates.length+' movies found. Tap to keep or skip — skip any where the title is visible in the image.';
+    $('packMsg').textContent=candidates.length+' movies. Tap a card to keep/skip; use 🔀 to swap in a different still. Skip any where the title shows.';
     renderCandidates(); $('packActions').style.display='flex';
   }catch(e){ $('packMsg').textContent='TMDB request failed — check the key and your connection.'; }
 }
@@ -631,8 +658,9 @@ function renderCandidates(){
   candidates.forEach((c,i)=>{
     const d=document.createElement('div');
     d.className='cand'+(c.sel?' sel':'');
-    d.innerHTML='<div class="tick">'+(c.sel?'✓':'')+'</div><img loading="lazy" src="'+c.thumb+'" alt=""><div class="lbl">'+c.title+' <span class="yr">'+c.year+'</span></div>';
+    d.innerHTML='<button class="shuf" title="Different still">🔀</button><div class="tick">'+(c.sel?'✓':'')+'</div><img loading="lazy" src="'+c.thumb+'" alt=""><div class="lbl">'+c.title+' <span class="yr">'+c.year+'</span></div>';
     d.onclick=()=>{ candidates[i].sel=!candidates[i].sel; renderCandidates(); };
+    d.querySelector('.shuf').onclick=(e)=>{ e.stopPropagation(); reshuffleCard(i); };
     g.appendChild(d);
   });
   const n=candidates.filter(c=>c.sel).length;
