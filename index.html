@@ -172,8 +172,10 @@
     <p>Type a genre or topic (e.g. <i>superhero, heist, space, zombie, spy</i>). Movie images come from TMDB — you approve which ones make the cut.</p>
     <div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap;align-items:center;margin-top:12px">
       <input type="text" id="packTopic" placeholder="genre or topic" style="min-width:200px;text-align:left">
-      <span class="sub" style="margin:0">from year</span>
-      <input type="text" id="packYear" value="2003" style="width:90px">
+      <span class="sub" style="margin:0">years</span>
+      <input type="text" id="packYearFrom" value="2003" style="width:80px" placeholder="from">
+      <span class="sub" style="margin:0">–</span>
+      <input type="text" id="packYearTo" value="2026" style="width:80px" placeholder="to">
       <button class="btn btn-primary" id="packFind">Find Movies</button>
     </div>
     <div class="sub" id="packMsg" style="margin-top:12px"></div>
@@ -594,7 +596,9 @@ async function resolveTopic(topic){
 async function findMovies(){
   if(!tmdbReady){ $('packMsg').textContent='TMDB key not set in index.html.'; return; }
   const topic=$('packTopic').value.trim();
-  const minYear=parseInt($('packYear').value,10)||2003;
+  let minYear=parseInt($('packYearFrom').value,10)||1900;
+  let maxYear=parseInt($('packYearTo').value,10)||new Date().getFullYear();
+  if(minYear>maxYear){ const t=minYear; minYear=maxYear; maxYear=t; }
   if(!topic) return;
   $('packMsg').textContent='Searching TMDB…'; $('candGrid').innerHTML=''; $('packActions').style.display='none';
   try{
@@ -604,7 +608,8 @@ async function findMovies(){
     for(let page=1; page<=3; page++){
       const res=await fetch(tmdbUrl('/discover/movie', Object.assign({
         sort_by:'popularity.desc', include_adult:'false', language:'en-US',
-        'primary_release_date.gte': minYear+'-01-01', 'vote_count.gte':'80', page:String(page)
+        'primary_release_date.gte': minYear+'-01-01', 'primary_release_date.lte': maxYear+'-12-31',
+        'vote_count.gte':'80', page:String(page)
       }, param)));
       const data=await res.json();
       movies=movies.concat(data.results||[]);
