@@ -101,6 +101,19 @@
   .conn.ok{color:var(--good);}
   .conn.err{color:var(--bad);}
   a{color:var(--accent2);}
+
+  /* pack builder */
+  #packbuilder{display:none; width:100%; max-width:1000px; flex-direction:column; align-items:center;}
+  .candgrid{width:100%; display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:12px; margin-top:16px;}
+  .cand{position:relative; border:2px solid #2a2f4d; border-radius:12px; overflow:hidden; cursor:pointer; background:#0f1120;}
+  .cand img{width:100%; aspect-ratio:16/9; object-fit:cover; display:block;}
+  .cand .lbl{padding:8px 10px; font-size:13px; font-weight:600;}
+  .cand .lbl .yr{color:var(--muted); font-weight:400;}
+  .cand.sel{border-color:var(--accent);}
+  .cand .tick{position:absolute; top:8px; right:8px; width:26px; height:26px; border-radius:50%;
+    background:rgba(0,0,0,.55); display:flex; align-items:center; justify-content:center; font-size:15px; font-weight:800;}
+  .cand.sel .tick{background:var(--accent); color:#1a1400;}
+  .packsbtns button{margin:4px;}
 </style>
 </head>
 <body>
@@ -138,13 +151,38 @@
   <div class="sub" style="margin-top:10px">Players joined:</div>
   <ul class="players-in" id="lobbyPlayers"><li class="empty">waiting…</li></ul>
   <div class="row">
+    <button class="btn btn-ghost" id="buildPackBtn">🎬 Build Pack (TMDB)</button>
     <button class="btn btn-ghost" id="loadImgsBtn">Load Screenshots</button>
     <button class="btn btn-primary" id="startBtn" disabled>Start Game</button>
   </div>
   <div class="sub" id="imgStatus" style="margin-top:10px">No screenshots loaded yet.</div>
+  <div class="sub packsbtns" id="savedPacks" style="margin-top:8px"></div>
   <input type="file" id="folderInput" webkitdirectory directory multiple accept="image/*" class="hidden">
   <input type="file" id="filesInput" multiple accept="image/*" class="hidden">
   <div class="conn" id="hostConn" style="margin-top:10px"></div>
+</div>
+
+<!-- ============ PACK BUILDER ============ -->
+<div id="packbuilder">
+  <div class="topbar" style="width:100%">
+    <h1 style="font-size:20px">🎬 Build a Pack</h1>
+    <button class="btn btn-ghost" id="packBack" style="padding:8px 14px;font-size:13px">← Back</button>
+  </div>
+  <div class="card">
+    <p>Type a genre or topic (e.g. <i>superhero, heist, space, zombie, spy</i>). Movie images come from TMDB — you approve which ones make the cut.</p>
+    <div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap;align-items:center;margin-top:12px">
+      <input type="text" id="packTopic" placeholder="genre or topic" style="min-width:200px;text-align:left">
+      <span class="sub" style="margin:0">from year</span>
+      <input type="text" id="packYear" value="2003" style="width:90px">
+      <button class="btn btn-primary" id="packFind">Find Movies</button>
+    </div>
+    <div class="sub" id="packMsg" style="margin-top:12px"></div>
+  </div>
+  <div id="candGrid" class="candgrid"></div>
+  <div class="row" id="packActions" style="display:none">
+    <button class="btn btn-ghost" id="packToggleAll">Select / clear all</button>
+    <button class="btn btn-primary" id="packAdd">Add selected to game</button>
+  </div>
 </div>
 
 <!-- ============ HOST GAME ============ -->
@@ -212,6 +250,9 @@
 const SUPABASE_URL = "https://fenbxfouastrnkzrkntk.supabase.co";
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZlbmJ4Zm91YXN0cm5renJrbnRrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ5OTI2MzEsImV4cCI6MjEwMDU2ODYzMX0.HsM70Pzthcg5zI8l5cwM-3w316NoVrOk4Yojlui8Lww";
 
+/* TMDB key powers the "Build Pack" feature (fetch movie images by genre/topic). */
+const TMDB_KEY = "b9837ffbe3eea2bdb52a7a6931e0643e";
+
 /* Zoom curve: 7 stages, 6 zoom-outs to fully reveal. */
 const LEVELS = [2000, 1000, 750, 500, 300, 200, 100];
 /* First player to reach this score wins the game. */
@@ -244,10 +285,11 @@ window.addEventListener('DOMContentLoaded', () => {
   if (room){ show('join'); $('joinCode').value = room; $('joinName').focus(); }
 });
 function show(view){
-  ['landing','join','lobby','hostGame','player'].forEach(v=>{
+  const flexViews=['hostGame','player','packbuilder'];
+  ['landing','join','lobby','packbuilder','hostGame','player'].forEach(v=>{
     const el=$(v); if(!el) return;
-    if(v===view){ el.classList.remove('hidden'); el.style.display = (v==='hostGame'||v==='player')?'flex':( v==='landing'||v==='join'||v==='lobby' ? 'block':''); }
-    else { el.classList.add('hidden'); if(v==='hostGame'||v==='player') el.style.display='none'; }
+    if(v===view){ el.classList.remove('hidden'); el.style.display = flexViews.includes(v)?'flex':'block'; }
+    else { el.classList.add('hidden'); if(flexViews.includes(v)) el.style.display='none'; }
   });
 }
 
@@ -288,6 +330,7 @@ async function startHost(){
   $('joinUrl').textContent = url;
   $('qrbox').innerHTML='';
   new QRCode($('qrbox'), { text:url, width:180, height:180, correctLevel: QRCode.CorrectLevel.M });
+  renderSavedPacks();
 }
 
 function syncPresence(){
@@ -518,6 +561,114 @@ function broadcastState(winnerName, revealTitle){
     buzzersOpen, buzzOrder, lockedOut:[...lockedOut],
     scores, winner: winnerName||null, reveal: revealTitle||null
   }});
+}
+
+/* ============================================================
+   PACK BUILDER (TMDB)
+============================================================ */
+let genreMap=null, candidates=[];
+const tmdbReady = !TMDB_KEY.includes('YOUR_') && TMDB_KEY.length>10;
+
+function tmdbUrl(path, params){
+  const u=new URL('https://api.themoviedb.org/3'+path);
+  u.searchParams.set('api_key', TMDB_KEY);
+  Object.entries(params||{}).forEach(([k,v])=>u.searchParams.set(k,v));
+  return u.toString();
+}
+async function ensureGenres(){
+  if(genreMap) return genreMap;
+  const res=await fetch(tmdbUrl('/genre/movie/list',{language:'en-US'}));
+  const data=await res.json();
+  genreMap={}; (data.genres||[]).forEach(g=>genreMap[g.name.toLowerCase()]=g.id);
+  return genreMap;
+}
+async function resolveTopic(topic){
+  const gm=await ensureGenres();
+  const t=topic.trim().toLowerCase();
+  if(gm[t]) return { with_genres:gm[t] };
+  const res=await fetch(tmdbUrl('/search/keyword',{query:topic}));
+  const data=await res.json();
+  if(data.results && data.results.length) return { with_keywords:data.results[0].id };
+  return null;
+}
+async function findMovies(){
+  if(!tmdbReady){ $('packMsg').textContent='TMDB key not set in index.html.'; return; }
+  const topic=$('packTopic').value.trim();
+  const minYear=parseInt($('packYear').value,10)||2003;
+  if(!topic) return;
+  $('packMsg').textContent='Searching TMDB…'; $('candGrid').innerHTML=''; $('packActions').style.display='none';
+  try{
+    const param=await resolveTopic(topic);
+    if(!param){ $('packMsg').textContent='No matching genre or topic found — try another word.'; return; }
+    let movies=[];
+    for(let page=1; page<=3; page++){
+      const res=await fetch(tmdbUrl('/discover/movie', Object.assign({
+        sort_by:'popularity.desc', include_adult:'false', language:'en-US',
+        'primary_release_date.gte': minYear+'-01-01', 'vote_count.gte':'80', page:String(page)
+      }, param)));
+      const data=await res.json();
+      movies=movies.concat(data.results||[]);
+      if(page>=(data.total_pages||1)) break;
+    }
+    const seen=new Set();
+    candidates=movies.filter(m=>m.backdrop_path).map(m=>({
+      title:m.title, year:(m.release_date||'').slice(0,4),
+      url:'https://image.tmdb.org/t/p/original'+m.backdrop_path,
+      thumb:'https://image.tmdb.org/t/p/w500'+m.backdrop_path, sel:true
+    })).filter(c=>{ if(seen.has(c.title)) return false; seen.add(c.title); return true; });
+    if(!candidates.length){ $('packMsg').textContent='No usable images found — try another topic or year.'; return; }
+    $('packMsg').textContent=candidates.length+' movies found. Tap to keep or skip — skip any where the title is visible in the image.';
+    renderCandidates(); $('packActions').style.display='flex';
+  }catch(e){ $('packMsg').textContent='TMDB request failed — check the key and your connection.'; }
+}
+function renderCandidates(){
+  const g=$('candGrid'); g.innerHTML='';
+  candidates.forEach((c,i)=>{
+    const d=document.createElement('div');
+    d.className='cand'+(c.sel?' sel':'');
+    d.innerHTML='<div class="tick">'+(c.sel?'✓':'')+'</div><img loading="lazy" src="'+c.thumb+'" alt=""><div class="lbl">'+c.title+' <span class="yr">'+c.year+'</span></div>';
+    d.onclick=()=>{ candidates[i].sel=!candidates[i].sel; renderCandidates(); };
+    g.appendChild(d);
+  });
+  const n=candidates.filter(c=>c.sel).length;
+  $('packAdd').textContent='Add '+n+' to game';
+}
+$('buildPackBtn').onclick=()=>{
+  if(!tmdbReady){ alert('TMDB key is not set in index.html.'); return; }
+  show('packbuilder'); $('packTopic').focus();
+};
+$('packBack').onclick=()=>show('lobby');
+$('packFind').onclick=findMovies;
+$('packTopic').addEventListener('keydown',e=>{ if(e.key==='Enter') findMovies(); });
+$('packToggleAll').onclick=()=>{ const any=candidates.some(c=>c.sel); candidates.forEach(c=>c.sel=!any); renderCandidates(); };
+$('packAdd').onclick=()=>{
+  const chosen=candidates.filter(c=>c.sel).map(c=>({url:c.url, name:c.title}));
+  if(!chosen.length){ alert('Select at least one movie.'); return; }
+  images.forEach(im=>{ if(im.url && im.url.startsWith('blob:')) URL.revokeObjectURL(im.url); });
+  images=chosen;
+  const packName=($('packTopic').value.trim()||'pack')+' · '+new Date().toLocaleDateString();
+  savePack(packName, chosen);
+  $('imgStatus').textContent=images.length+' movies loaded from “'+packName+'”.';
+  $('startBtn').disabled=false;
+  renderSavedPacks();
+  show('lobby');
+};
+
+/* saved packs in localStorage */
+function loadPacks(){ try{ return JSON.parse(localStorage.getItem('mm_packs')||'{}'); }catch(e){ return {}; } }
+function savePack(name,list){ try{ const p=loadPacks(); p[name]=list; localStorage.setItem('mm_packs',JSON.stringify(p)); }catch(e){} }
+function renderSavedPacks(){
+  const packs=loadPacks(), names=Object.keys(packs), el=$('savedPacks');
+  if(!el) return;
+  if(!names.length){ el.innerHTML=''; return; }
+  el.innerHTML='<span style="display:block;margin-bottom:4px">Saved packs (tap to load):</span>';
+  names.forEach(n=>{
+    const b=document.createElement('button');
+    b.className='btn btn-ghost'; b.style.cssText='padding:6px 12px;font-size:12px';
+    b.textContent=n+' ('+packs[n].length+')';
+    b.onclick=()=>{ images=packs[n].slice(); $('imgStatus').textContent=images.length+' movies loaded from “'+n+'”.'; $('startBtn').disabled=false; };
+    el.appendChild(b);
+  });
 }
 
 /* ============================================================
